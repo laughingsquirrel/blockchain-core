@@ -28,3 +28,17 @@
 -define(BC_UPGRADE_NAMES, [<<"gateway_v2">>, <<"hex_targets">>, <<"gateway_oui">>,
                            <<"h3dex">>, <<"h3dex2">>,
                            <<"gateway_lg2">>]).
+
+-define(SUPPORTED_REGIONS, [
+    "as923_1",
+    "as923_2",
+    "as923_3",
+    "au915",
+    "cn779",
+    "eu433",
+    "eu868",
+    "in865",
+    "kr920",
+    "ru864",
+    "us915"
+]).
