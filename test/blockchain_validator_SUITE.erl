@@ -232,7 +232,8 @@ unstake_ok(Config) ->
         OwnerPubkeyBin,
         OwnerPubkeyBin,
         ?bones(10000),
-        50
+        50,
+        200
     ),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, OwnerSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
@@ -257,7 +258,8 @@ unstake_fail_unstake_in_consensus(Config) ->
         OwnerPubkeyBin,
         OwnerPubkeyBin,
         ?bones(10000),
-        50
+        50,
+        200
     ),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, OwnerSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
@@ -284,7 +286,8 @@ unstake_fail_not_owner(Config) ->
         OwnerPubkeyBin,
         NotOwnerPubkeyBin,
         ?bones(10000),
-        50
+        50,
+        200
     ),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, NotSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
@@ -304,7 +307,7 @@ unstake_fail_invalid_stake_release_height(Config) ->
     NonConsensus = Genesis -- Consensus,
     [{OwnerPubkeyBin, {_OwnerPub, _OwnerPriv, OwnerSigFun}} | _] = NonConsensus,
 
-    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1),
+    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1, 123),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, OwnerSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
 
@@ -326,7 +329,7 @@ unstake_fail_already_cooldown(Config) ->
     NonConsensus = Genesis -- Consensus,
     [{OwnerPubkeyBin, {_OwnerPub, _OwnerPriv, OwnerSigFun}} | _] = NonConsensus,
 
-    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1),
+    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1, 123),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, OwnerSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
 
@@ -349,7 +352,7 @@ unstake_fail_already_unstaked(Config) ->
     NonConsensus = Genesis -- Consensus,
     [{OwnerPubkeyBin, {_OwnerPub, _OwnerPriv, OwnerSigFun}} | _] = NonConsensus,
 
-    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1),
+    Txn = blockchain_txn_unstake_validator_v1:new(OwnerPubkeyBin, OwnerPubkeyBin, ?bones(10000), 1, 123),
     SignedTxn = blockchain_txn_unstake_validator_v1:sign(Txn, OwnerSigFun),
     ct:pal("SignedUnstakeTxn: ~p", [SignedTxn]),
 
