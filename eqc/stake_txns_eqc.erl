@@ -18,10 +18,8 @@
 
 -record(s,
         {
+         init = false,
          chain,
-         keys,
-         master_keys,
-         base_dir,
          validators,
          group,
          accounts,
@@ -63,7 +61,7 @@ initial_state() ->
        accounts = maps:from_list(
                     lists:zip(lists:seq(1, 5),
                               lists:duplicate(5, ?bones(10000)))),
-       validators = lists:seq(1, 4)
+       validators = []
       }.
 
 init_chain_env() ->
@@ -127,7 +125,7 @@ init_chain_env() ->
         %% GenSecPaymentTxs ++
         InitialConsensusTxn ++
         [GenConsensusGroupTx],
-    lager:info("initial transactions: ~p", [Txs]),
+    %% lager:info("initial transactions: ~p", [Txs]),
 
     GenesisBlock = blockchain_block:new_genesis_block(Txs),
     ok = blockchain:integrate_genesis(GenesisBlock, Chain),
@@ -152,7 +150,7 @@ val_vars() ->
       ?validator_minimum_stake => ?bones(10000),
       ?validator_liveness_grace_period => 10,
       ?validator_liveness_interval => 5,
-      ?stake_withdrawl_cooldown => 10,
+      ?stake_withdrawl_cooldown => 5,
       ?stake_withdrawal_max => 500,
       ?dkg_penalty => 1.0,
       ?penalty_history_limit => 100,
@@ -161,89 +159,44 @@ val_vars() ->
 
 %% -- Generators -------------------------------------------------------------
 
-command(S) ->
-    frequency(
-      [
-       %% unstake
-       %% transfer
-       %% election -- maybe just handle this in next_state?
+weight(_S, init) ->
+    1;
+weight(_S, stake) ->
+    4;
+weight(_S, block) ->
+    4.
 
-       {3, {call, ?M, block, [{var, chain}, {var, group}, S#s.pending_txns]}},
-       {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, valid]}},
-       {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, balance]}},
-       {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, bad_sig]}},
-       {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, bad_owner]}}%,
-       % {1, {call, ?M, stake, [S#s.accounts, bad_]}}%, dead
-       %{2, {call, ?M, close, [S#s.rc]}},
-      ]).
+%% command(S) ->
+%%     frequency(
+%%       [
+%%        %% unstake
+%%        %% transfer
+%%        %% election -- maybe just handle this in next_state?
 
-precondition(_S, _) ->
-    true.
+%%        {1, {call, ?M, init, [{var, chain}]}},
+%%        {3, {call, ?M, block, [{var, chain}, {var, group}, S#s.pending_txns]}},
+%%        {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, valid]}},
+%%        {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, balance]}},
+%%        {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, bad_sig]}},
+%%        {1, {call, ?M, stake, [S#s.accounts, {var, accounts}, bad_owner]}} %,
 
-dynamic_precondition(_S, ?call(stake, [Accounts, _DynAccts, balance])) ->
-    maps:size(
-      maps:filter(
-        fun(_, Bal) ->
-                Bal < ?bones(10000)
-        end,
-        Accounts)) =/= 0;
-%% we need at least one possible staker for these others to be reasonable
-dynamic_precondition(_S, ?call(stake, [Accounts, _DynAccts, _])) ->
-    maps:size(
-      maps:filter(
-        fun(_, Bal) ->
-                Bal >= ?bones(10000)
-        end,
-        Accounts)) =/= 0;
-dynamic_precondition(_S, _) ->
-    true.
+%%        % {1, {call, ?M, unstake, [S#s.height, {var, accounts},  S#s.validators, {var, validators}, valid]}}%,
+%%        % {1, {call, ?M, stake, [S#s.accounts, bad_]}}%, dead
+%%        %{2, {call, ?M, close, [S#s.rc]}},
+%%       ]).
 
-%%% postcondition(S, {call, _, take, [_, Actor]}, R) ->
+command_precondition_common(S, Cmd) ->
+    S#s.init == false orelse Cmd == init.
 
-%% TODO add postcondition check that at least one non-consensus validator is staked for unstake or transfer
-postcondition(#s{pending_txns = Pend,
-                 validators = _vals,
-                 accounts = _Accounts} = _S,
-              ?call(block,_Args),
-              {ok, Valid, Invalid0, _Block}) ->
-    %% lager:info("XXXX val ~p inval ~p pend ~p", [Valid, Invalid, Pend]),
-    {Invalid, _Reasons} = lists:unzip(Invalid0),
-    maps:fold(
-      fun(_, _, false) ->
-              false;
-         (_ID, {valid, Txn}, _Acc) ->
-              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
-              %% list at all
-              lists:member(Txn, Valid) orelse
-                  not lists:member(Txn, Invalid);
-         %% all non-'valid' reason tags are invalid
-         (__ID, {_, Txn}, _Acc) ->
-              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
-              %% list at all
-              lists:member(Txn, Invalid) orelse
-                  not lists:member(Txn, Valid)
-      end,
-      true,
-      Pend);
-postcondition(_S, _C, _R) ->
-    true.
-
-%% need to remove pending txns
-next_state(#s{} = S,
-           V,
-           ?call(block, [Chain, _Group, _Transactions])) ->
-    S#s{chain = ?call(add_block, [Chain, V]),
-        height = S#s.height + 1,
-        pending_txns = ?call(update_pending, [V, S#s.pending_txns])};
-next_state(#s{} = S,
-           V,
-           ?call(stake, [SymAccounts, _Accounts, Reason])) ->
-    S#s{accounts = ?call(update_accounts, [stake, SymAccounts, Reason, V]),
-        pending_txns = ?call(add_pending, [V, S#s.txn_ctr, S#s.pending_txns, Reason]),
-        txn_ctr = S#s.txn_ctr + 1};
-next_state(S, _V, _C) ->
-    error({S, _V, _C}),
-    S.
+%% invariant(#s{chain = undefined}) ->
+%%     true;
+%% invariant(#s{chain = Chain}) ->
+%%     Ledger = blockchain:ledger(Chain),
+%%     Circ = blockchain_ledger_v1:query_circulating_hnt(Ledger),
+%%     Cool = blockchain_ledger_v1:query_cooldown_hnt(Ledger),
+%%     Staked = blockchain_ledger_v1:query_staked_hnt(Ledger),
+%%     %% make this better.
+%%     ?bones(0000) == (Circ + Cool + Staked).
 
 add_block(Chain, {ok, _Valid, _Invalid, Block}) ->
     %% doing this for the side-effects, not sure if it's right :/
@@ -271,6 +224,42 @@ update_accounts(stake, SymAccts, _, _) ->
     SymAccts.
 
 %% -- Commands ---------------------------------------------------------------
+init_pre(S, _) ->
+    S#s.init == false.
+
+init_args(_S) ->
+    [{var, chain}].
+
+init(Chain) ->
+    Chain.
+
+init_next(S, R, _) ->
+    S#s{init = true,
+        chain = R}.
+
+%% stake command
+stake_dynamicpre(_S, [Accounts, _DynAccts, balance]) ->
+    maps:size(
+      maps:filter(
+        fun(_, Bal) ->
+                Bal < ?bones(10000)
+        end,
+        Accounts)) =/= 0;
+%% we need at least one possible staker for these others to be reasonable
+stake_dynamicpre(_S, [Accounts, _DynAccts, _]) ->
+    maps:size(
+      maps:filter(
+        fun(_, Bal) ->
+                Bal >= ?bones(10000)
+        end,
+        Accounts)) =/= 0.
+
+stake_args(S) ->
+    oneof([[S#s.accounts, {var, accounts}, valid],
+           [S#s.accounts, {var, accounts}, balance],
+           [S#s.accounts, {var, accounts}, bad_sig],
+           [S#s.accounts, {var, accounts}, bad_owner]]).
+
 stake(SymAccts, Accounts, Reason) ->
     %% todo rich accounts vs poor accounts
     Filter =
@@ -313,6 +302,43 @@ stake_txn(#account{address = Account0,
             STxn
     end.
 
+stake_next(#s{} = S,
+           V,
+           [SymAccounts, _Accounts, Reason]) ->
+    S#s{accounts = ?call(update_accounts, [stake, SymAccounts, Reason, V]),
+        pending_txns = ?call(add_pending, [V, S#s.txn_ctr, S#s.pending_txns, Reason]),
+        txn_ctr = S#s.txn_ctr + 1}.
+
+%% unstake command
+unstake_precondition(#s{validators = Validators}) ->
+    Validators /= [].
+
+unstake(Height, Accounts, SymVals, Validators, Reason) ->
+    Val = select(SymVals),
+    Txn = unstake_txn(maps:get(SymVals, Validators), Accounts, Height, Reason),
+    {ok, Val, Txn}.
+
+unstake_txn(#validator{owner = Owner, addr = Addr}, Accounts, Height, Reason) ->
+    Account = maps:get(Owner, Accounts),
+
+    Txn = blockchain_txn_unstake_validator_v1:new(
+            Addr, Account#account.address,
+            ?bones(10000),
+            Height + 5 + 1,
+            35000
+           ),
+    STxn = blockchain_txn_stake_validator_v1:sign(Txn, Account#account.sig_fun),
+    case Reason of
+        bad_sig ->
+            blockchain_txn_stake_validator_v1:owner_signature(<<0:512>>, Txn);
+        _ ->
+            STxn
+    end.
+
+%% block commands
+block_args(S) ->
+    [{var, chain}, {var, group}, S#s.pending_txns].
+
 block(Chain, Group, Txns) ->
     STxns = lists:sort(fun blockchain_txn:sort/2, element(2, lists:unzip(maps:values(Txns)))),
     {Valid, Invalid} = blockchain_txn:validate(STxns, Chain),
@@ -336,23 +362,39 @@ block(Chain, Group, Txns) ->
     BinBlock = blockchain_block:serialize(Block0),
     Signatures = signatures(Group, BinBlock),
     Block1 = blockchain_block:set_signatures(Block0, Signatures),
-    lager:info("block ~p", [Block1]),
+    %% lager:info("txns ~p", [Block1]),
     {ok, Valid, Invalid, Block1}.
 
-signatures(Members, Bin) ->
-    lists:foldl(
-      fun({A, {_, _, F}}, Acc) ->
-              Sig = F(Bin),
-              [{A, Sig}|Acc]
-      end, [], Members).
+block_next(#s{} = S,
+           V,
+           [Chain, _Group, _Transactions]) ->
+    S#s{chain = ?call(add_block, [Chain, V]),
+        height = S#s.height + 1,
+        pending_txns = ?call(update_pending, [V, S#s.pending_txns])}.
 
-cleanup(#s{}, Env) ->
-    Dir = maps:get(base_dir, maps:from_list(Env)),
-    lager:info("entering cleanup"),
-    PWD = string:trim(os:cmd("pwd")),
-    os:cmd("rm -r " ++ PWD ++ "/" ++ Dir),
-    true.
-
+block_post(#s{pending_txns = Pend,
+              validators = _vals,
+              accounts = _Accounts} = _S,
+              _Args,
+              {ok, Valid, Invalid0, _Block}) ->
+    {Invalid, _Reasons} = lists:unzip(Invalid0),
+    maps:fold(
+      fun(_, _, false) ->
+              false;
+         (_ID, {valid, Txn}, _Acc) ->
+              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
+              %% list at all
+              lists:member(Txn, Valid) orelse
+                  not lists:member(Txn, Invalid);
+         %% all non-'valid' reason tags are invalid
+         (__ID, {_, Txn}, _Acc) ->
+              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
+              %% list at all
+              lists:member(Txn, Invalid) orelse
+                  not lists:member(Txn, Valid)
+      end,
+      true,
+      Pend).
 
 %% -- Property ---------------------------------------------------------------
 prop_stake() ->
@@ -397,3 +439,17 @@ bugs(Time, Bugs) ->
 select(Lst) ->
     Len = length(Lst),
     lists:nth(rand:uniform(Len), Lst).
+
+signatures(Members, Bin) ->
+    lists:foldl(
+      fun({A, {_, _, F}}, Acc) ->
+              Sig = F(Bin),
+              [{A, Sig}|Acc]
+      end, [], Members).
+
+cleanup(#s{}, Env) ->
+    Dir = maps:get(base_dir, maps:from_list(Env)),
+    lager:info("entering cleanup"),
+    PWD = string:trim(os:cmd("pwd")),
+    os:cmd("rm -r " ++ PWD ++ "/" ++ Dir),
+    true.
