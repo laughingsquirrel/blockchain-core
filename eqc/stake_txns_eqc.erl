@@ -186,14 +186,31 @@ invariant(#s{chain = Chain,
 
     Stake = ?bones(10000),
 
-    NumPends = maps:size(Pends),
+    NumPends = length(lists:flatten(maps:values(Pends))),
     NumVals = length(Vals),
-    lager:info("circ ~p cool ~p staked ~p vals ~p pend ~p",
-               [Circ, Cool, Staked, NumVals, NumPends]),
+    lager:debug("circ ~p cool ~p staked ~p vals ~p pend ~p",
+                [Circ, Cool, Staked, NumVals, NumPends]),
 
-    NumPends * Stake == Cool andalso
-        (4 + NumVals) * Stake == Staked andalso
-        (5 - NumVals - NumPends) * Stake == Circ.
+    try
+        ExpCool = NumPends * Stake,
+        case ExpCool == Cool of
+            false -> throw({cool, ExpCool, Cool});
+            _ -> ok
+        end,
+        ExpStaked = (4 + NumVals) * Stake,
+        case ExpStaked == Staked of
+            false -> throw({staked, ExpStaked, Cool});
+            _ -> ok
+        end,
+        ExpCirc = (5 - NumVals - NumPends) * Stake,
+        case ExpCirc == Circ of
+            false -> throw({circ, ExpCirc, Circ});
+            _ -> ok
+        end,
+        true
+    catch throw:E ->
+            E
+    end.
 
 add_block(Chain, {ok, _Valid, _Invalid, Block}) ->
     %% doing this for the side-effects, not sure if it's right :/
@@ -316,28 +333,29 @@ update_validators(Validators, Reason, {ok, Val, _Txn}) ->
 %% unstake command
 unstake_dynamicpre(#s{prepending_unstake = Unstaked,
                       validators = Validators}, _Args) ->
-    (Validators -- maps:values(Unstaked)) /= [].
+    %% lager:info("dynamic pre ~p ~p", [Validators, maps:values(Unstaked)]),
+    (Validators -- lists:flatten(maps:values(Unstaked))) /= [].
 
 unstake_args(S) ->
     oneof([
-           [S#s.height, {var, accounts},  S#s.validators, valid]
+           [S#s.height, {var, accounts},  S#s.prepending_unstake, S#s.validators, valid]
           ]).
 
-unstake(Height, Accounts, SymVals, Reason) ->
-    Val = select(SymVals),
+unstake(Height, Accounts, Unstaked, SymVals, Reason) ->
+    Val = select(SymVals -- lists:flatten(maps:values(Unstaked))),
     Txn = unstake_txn(Val, Accounts, Height, Reason),
     {ok, Val, Txn}.
 
 unstake_next(#s{} = S,
              V,
-             [_Height, _Accounts, _Vals, Reason]) ->
+             [_Height, _Accounts, _Vals, _, Reason]) ->
     S#s{prepending_unstake = ?call(update_preunstake, [S#s.prepending_unstake, Reason, V]),
         pending_txns = ?call(add_pending, [V, S#s.txn_ctr, S#s.pending_txns, Reason]),
         txn_ctr = S#s.txn_ctr + 1}.
 
 update_preunstake(Pending, valid, {ok, Val, Txn}) ->
     UnstakeHeight = blockchain_txn_unstake_validator_v1:stake_release_height(Txn),
-    Pending#{UnstakeHeight => Val};
+    maps:update_with(UnstakeHeight, fun(X) -> [Val | X] end, [Val], Pending);
 update_preunstake(Pending, _Reason, _Res) ->
     Pending.
 
@@ -406,16 +424,20 @@ block_next(#s{} = S,
         pending_txns = ?call(update_pending, [V, S#s.pending_txns])}.
 
 block_update_validators(PV, Unstakes, V) ->
-    (V ++ PV) -- maps:values(Unstakes).
+    (V ++ PV) -- lists:flatten(maps:values(Unstakes)).
 
 update_unstake(Height, PP, P) ->
-    maps:without([Height], maps:merge(PP, P)).
+    maps:remove(Height, maps:merge(PP, P)).
 
 block_update_accounts(Height, Accounts, PendingUnstake) ->
     case maps:find(Height, PendingUnstake) of
-        {ok, Val} ->
-            Bal = maps:get(Val#validator.owner, Accounts),
-            Accounts#{Val#validator.owner => Bal + ?bones(10000)};
+        {ok, Vals} ->
+            lists:foldl(
+              fun(Val, Acc) ->
+                      Bal = maps:get(Val#validator.owner, Acc),
+                      Acc#{Val#validator.owner => Bal + ?bones(10000)}
+              end, Accounts,
+              Vals);
         _ -> Accounts
     end.
 
@@ -425,29 +447,40 @@ block_post(#s{pending_txns = Pend,
               _Args,
               {ok, Valid, Invalid0, _Block}) ->
     {Invalid, _Reasons} = lists:unzip(Invalid0),
-    maps:fold(
-      fun(_, _, false) ->
-              false;
-         (_ID, {valid, Txn}, _Acc) ->
-              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
-              %% list at all
-              lists:member(Txn, Valid) orelse
-                  not lists:member(Txn, Invalid);
-         %% all non-'valid' reason tags are invalid
-         (__ID, {_, Txn}, _Acc) ->
-              %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
-              %% list at all
-              lists:member(Txn, Invalid) orelse
-                  not lists:member(Txn, Valid)
-      end,
-      true,
-      Pend).
+    Ret =
+        maps:fold(
+          fun(_ID, {valid, Txn}, Acc) ->
+                  %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
+                  %% list at all
+                  case lists:member(Txn, Valid) orelse
+                      not lists:member(Txn, Invalid) of
+                      false ->
+                          [{valid, Txn}];
+                      _ -> Acc
+                  end;
+             %% all non-'valid' reason tags are invalid
+             (__ID, {Reason, Txn}, Acc) ->
+                  %% we either need to be in the valid txns, or not in the invalid txns, i.e. not in the
+                  %% list at all
+                  case lists:member(Txn, Invalid) orelse
+                      not lists:member(Txn, Valid) of
+                      false ->
+                          [{Reason, Txn}];
+                      _ -> Acc
+                  end
+          end,
+          [],
+          Pend),
+    case Ret of
+        [] -> true;
+        _ -> Ret
+    end.
 
 %% -- Property ---------------------------------------------------------------
 prop_stake() ->
     ?FORALL(
        %% default to longer commands sequences for better coverage
-       Cmds, commands(?M),
+       Cmds, more_commands(5, commands(?M)),
        %% Cmds, noshrink(more_commands(5, commands(?M))),
        with_parameters(
          [{show_states, false},  % make true to print state at each transition
