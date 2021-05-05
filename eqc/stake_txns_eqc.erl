@@ -163,10 +163,12 @@ val_vars() ->
 
 weight(_S, init) ->
     1;
+weight(_S, transfer) ->
+    5;
 weight(_S, stake) ->
     4;
 weight(_S, unstake) ->
-    4;
+    3;
 weight(_S, block) ->
     4.
 
@@ -190,11 +192,10 @@ invariant(#s{chain = Chain,
     NumVals = length(Vals),
     lager:debug("circ ~p cool ~p staked ~p vals ~p pend ~p",
                 [Circ, Cool, Staked, NumVals, NumPends]),
-
     try
         ExpCool = NumPends * Stake,
         case ExpCool == Cool of
-            false -> throw({cool, ExpCool, Cool});
+            false -> throw({cool, ExpCool, Cool, Pends});
             _ -> ok
         end,
         ExpStaked = (4 + NumVals) * Stake,
@@ -218,7 +219,7 @@ add_block(Chain, {ok, _Valid, _Invalid, Block}) ->
     Chain.
 
 %% generalize?
-add_pending({ok, _Addr, Txn}, ID, Pending, Reason) ->
+add_pending({_ok, _Addr, Txn}, ID, Pending, Reason) ->
     Pending#{ID => {Reason, Txn}}.
 
 update_pending({ok, Valid, Invalid0, _Block}, Pending) ->
@@ -412,6 +413,90 @@ unstake_txn(#validator{owner = Owner, addr = Addr}, Accounts, Height, Reason) ->
         _ ->
             STxn
     end.
+%%%%
+%%% transfer command
+%%%%
+
+transfer_dynamicpre(#s{unstaked_validators = Dead0}, [_, _, _, _, _, bad_validator]) ->
+    Dead = lists:flatten(Dead0),
+    Dead /= [];
+transfer_dynamicpre(#s{prepending_unstake = Unstaked,
+                      validators = Validators}, _Args) ->
+    (Validators -- lists:flatten(maps:values(Unstaked))) /= [].
+
+transfer_args(S) ->
+    oneof([
+           [{var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, valid],
+           [{var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, bad_sig]
+           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, bad_account],
+           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, wrong_account],
+           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, bad_validator]
+          ]).
+
+transfer(Accounts, Unstaked, SymVals, Dead, Reason) ->
+    OldVal = case Reason of
+                 bad_validator -> select(Dead);
+                 _ -> select(SymVals -- lists:flatten(maps:values(Unstaked)))
+             end,
+    [{Address, _}] = test_utils:generate_keys(1),
+    {Txn, NewVal} = transfer_txn(OldVal, Address, Accounts, Reason),
+    {OldVal, NewVal, Txn}.
+
+transfer_next(#s{} = S,
+              V,
+              [_Accounts, _Vals, _, _, Reason]) ->
+    S#s{prepending_unstake = ?call(transfer_update_preunstake, [S#s.prepending_unstake, Reason, V]),
+        pending_txns = ?call(add_pending, [V, S#s.txn_ctr, S#s.pending_txns, Reason]),
+        pending_validators = ?call(transfer_update_validators, [S#s.pending_validators, Reason, V]),
+        txn_ctr = S#s.txn_ctr + 1}.
+
+transfer_update_preunstake(Pending, valid, {Val, _NewVal, _Txn}) ->
+    maps:update_with(transfer, fun(X) -> [Val | X] end, [Val], Pending);
+transfer_update_preunstake(Pending, _Reason, _Res) ->
+    Pending.
+
+transfer_update_validators(Validators, Reason, {_OldVal, Val, _Txn}) ->
+    case Reason of
+        valid -> Validators ++ [Val];
+        _ -> Validators
+    end.
+
+transfer_txn(#validator{owner = Owner, addr = Addr},
+             NewValAddr,
+             Accounts, Reason) ->
+    %% can't do bad_account because that will just create a new account
+    Account =
+        case Reason of
+            %% make up a non-existent account
+            bad_account ->
+                [{Acct, {_, _, Sig}}] = test_utils:generate_keys(1),
+                #account{address = Acct, sig_fun = Sig};
+            %% use existing but non-owner account
+            wrong_account ->
+                element(2, hd(maps:to_list(maps:remove(Owner, Accounts))));
+            _ ->
+                maps:get(Owner, Accounts)
+        end,
+    NewVal = #validator{owner = Account#account.id,
+                        addr = NewValAddr, stake = ?bones(10000)},
+
+    Txn = blockchain_txn_transfer_validator_stake_v1:new(
+            Addr, NewValAddr,
+            Account#account.address,
+            <<>>, % NewAccount,
+            ?bones(10000),
+            0, % transfer amount
+            35000
+           ),
+    STxn = blockchain_txn_transfer_validator_stake_v1:sign(Txn, Account#account.sig_fun),
+    FinalTxn =
+        case Reason of
+            bad_sig ->
+                blockchain_txn_transfer_validator_stake_v1:old_owner_signature(<<0:512>>, Txn);
+            _ ->
+                STxn
+        end,
+    {FinalTxn, NewVal}.
 
 %% block commands
 block_args(S) ->
@@ -469,7 +554,7 @@ update_dead_validators(Unstakes) ->
     lists:flatten(maps:values(Unstakes)).
 
 update_unstake(Height, PP, P) ->
-    maps:remove(Height, maps:merge(PP, P)).
+    maps:remove(transfer, maps:remove(Height, maps:merge(PP, P))).
 
 block_update_accounts(Height, Accounts, PendingUnstake) ->
     case maps:find(Height, PendingUnstake) of
