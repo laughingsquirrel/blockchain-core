@@ -437,6 +437,7 @@
 -define(validator_minimum_stake, validator_minimum_stake).  % HNT
 -define(validator_liveness_interval, validator_liveness_interval).  % blocks
 -define(validator_liveness_grace_period, validator_liveness_grace_period).  % blocks
+-define(validator_penalty_probability_factor, validator_penalty_probability_factor). % float
 %%% TODO fix the spelling here at next restart
 -define(stake_withdrawl_cooldown, stake_withdrawl_cooldown). % blocks
 -define(stake_withdrawal_max, stake_withdrawal_max). % blocks
