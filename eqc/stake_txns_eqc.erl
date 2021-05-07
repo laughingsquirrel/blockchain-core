@@ -158,13 +158,13 @@ val_vars() ->
 weight(_S, init) ->
     1;
 weight(_S, transfer) ->
-    5;
+    50;
 weight(_S, stake) ->
-    4;
+    30;
 weight(_S, unstake) ->
-    3;
+    30;
 weight(_S, block) ->
-    4.
+    10.  % hard to balance interesting interleavings with enough blocks to unstake 
 
 command_precondition_common(S, Cmd) ->
     S#s.init /= false orelse Cmd == init.
@@ -465,13 +465,25 @@ unstake_txn(#validator{owner = Owner, addr = Addr}, Accounts, Height, Reason) ->
 %%% transfer command
 %%%%
 
-transfer_dynamicpre(#s{unstaked_validators = Dead0}, [_, _, _, _, _, bad_validator]) ->
-    Dead = lists:flatten(Dead0),
-    Dead /= [];
 transfer_dynamicpre(#s{pretransfer = Pretransfer0,
                        accounts = Accounts,
                        prepending_unstake = Unstaked,
-                       validators = Validators}, [_, _, _, _, amount, valid]) ->
+                       validators = Validators,
+                       unstaked_validators = Dead0}, [_, _, _, _, _, InAddr, bad_validator]) ->
+    Dead = lists:flatten(Dead0),
+    Amt = case InAddr of
+              true -> 0;
+              false -> 0;
+              amount -> ?bones(9000)
+          end,
+    {Pretransfer, _Amts, _NewVals} = lists:unzip3(Pretransfer0),
+    (Validators -- (Pretransfer ++ lists:flatten(maps:values(Unstaked)))) /= []
+        andalso maps:size(maps:filter(fun(_, {Bal, _Tot}) -> Bal >= Amt end, Accounts)) =/= 0
+        andalso Dead /= [];
+transfer_dynamicpre(#s{pretransfer = Pretransfer0,
+                       accounts = Accounts,
+                       prepending_unstake = Unstaked,
+                       validators = Validators}, [_, _, _, _, _, amount, valid]) ->
     %% when amount + valid, we need to make sure that there is something it's possible to transfer
     {Pretransfer, _Amts, _NewVals} = lists:unzip3(Pretransfer0),
     (Validators -- (Pretransfer ++ lists:flatten(maps:values(Unstaked)))) /= []
@@ -491,14 +503,18 @@ transfer_args(S) ->
     oneof([
            [{var, accounts}, S#s.prepending_unstake, S#s.pretransfer,
             S#s.validators, S#s.unstaked_validators, acct_transfer(), valid],
-           [{var, accounts}, S#s.prepending_unstake,  S#s.pretransfer,
-            S#s.validators, S#s.unstaked_validators, acct_transfer(), bad_sig]
-           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, bad_account],
-           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, wrong_account],
-           %% [S#s.height, {var, accounts}, S#s.prepending_unstake, S#s.validators, S#s.unstaked_validators, bad_validator]
+           [{var, accounts}, S#s.prepending_unstake, S#s.pretransfer,
+            S#s.validators, S#s.unstaked_validators, acct_transfer(), bad_sig],
+           [{var, accounts}, S#s.prepending_unstake, S#s.pretransfer,
+            S#s.validators, S#s.unstaked_validators, acct_transfer(), bad_account],
+           [{var, accounts}, S#s.prepending_unstake, S#s.pretransfer,
+            S#s.validators, S#s.unstaked_validators, acct_transfer(), wrong_account],
+           [{var, accounts}, S#s.prepending_unstake, S#s.pretransfer,
+            S#s.validators, S#s.unstaked_validators, acct_transfer(), bad_validator]
           ]).
 
 transfer(Accounts, Unstaked, Pretransfer0, SymVals, Dead, IntraAddr, Reason) ->
+    lager:info("xxx ~p",[Pretransfer0]),
     {Pretransfer, _Amts, _NewVals} = lists:unzip3(Pretransfer0),
     OldVal = case Reason of
                  bad_validator -> select(Dead);
@@ -523,12 +539,6 @@ update_pretransfer(Pretransfer, valid, {Val, NewVal, Amt, _Txn}) ->
     [{Val, Amt, NewVal} | Pretransfer];
 update_pretransfer(Pretransfer, _Reason, _Res) ->
     Pretransfer.
-
-%% transfer_update_validators(Validators, Reason, {_OldVal, Val, _Txn}) ->
-%%     case Reason of
-%%         valid -> Validators ++ [Val];
-%%         _ -> Validators
-%%     end.
 
 transfer_txn(#validator{owner = Owner, addr = Addr},
              NewValAddr,
