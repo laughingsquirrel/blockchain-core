@@ -696,17 +696,21 @@ election_next(#s{pending_txns = PendTxns} = S,
               V,
               _Args) ->
     NewHeight = S#s.height + 1,
+    Update = ?call(fixup_txns, [S#s.group, V, PendTxns,
+                                S#s.prepending_unstake, S#s.pretransfer]),
     S#s{chain = ?call(add_block, [S#s.chain, V]),
         group = ?call(update_group, [V]),
-        pending_txns = ?call(fixup_txns, [S#s.group, V, PendTxns]),
+        pretransfer = {call, erlang, element, [3, Update]},
+        prepending_unstake = {call, erlang, element, [2, Update]},
+        pending_txns = {call, erlang, element, [1, Update]},
         height = NewHeight}.
 
 update_group({NewGroup, _Block}) ->
     NewGroup.
 
-fixup_txns(OldGroup, {NewGroup, _}, Pending) ->
-    maps:map(
-      fun(_, {Reason, Txn} = Orig) ->
+fixup_txns(OldGroup, {NewGroup, _}, Pending, Unstake, Pretransfer) ->
+    maps:fold(
+      fun(K, {Reason, Txn} = Orig, {Acc, Uns, Pre}) ->
               case blockchain_txn:type(Txn) of
                   blockchain_txn_transfer_validator_stake_v1 ->
                       OldVal = blockchain_txn_transfer_validator_stake_v1:old_validator(Txn),
@@ -717,18 +721,25 @@ fixup_txns(OldGroup, {NewGroup, _}, Pending) ->
                               case lists:member(OldVal, OldGroup) andalso
                                   not lists:member(OldVal, NewGroup) of
                                   true ->
-                                      {valid, Txn};
+                                      %% this becomes valid, but for now the new val is lost?
+                                      %%Pre1 = [{OldV, Amt, NewV} | Pre],
+                                      %%{Acc#{K => {valid, Txn}}, Uns, Pre1};
+                                      {Acc, Uns, Pre};
                                   _ ->
-                                      Orig
+                                      {Acc#{K => Orig}, Uns, Pre}
                               end;
                           valid ->
                               case lists:member(OldVal, NewGroup) of
                                   true ->
-                                      {in_group, Txn};
+                                      %% this becomes invalid, so needs to be removed from pretransfer
+                                      Pre1 = lists:filter(fun({#validator{addr = Addr}, _, _}) ->
+                                                                  Addr /= OldVal
+                                                          end, Pre),
+                                      {Acc#{K => {in_group, Txn}}, Uns, Pre1};
                                   _ ->
-                                      Orig
+                                      {Acc#{K => Orig}, Uns, Pre}
                               end;
-                          _ -> Orig
+                          _ -> {Acc#{K => Orig}, Uns, Pre}
                       end;
                   blockchain_txn_unstake_validator_v1 ->
                       OldVal = blockchain_txn_unstake_validator_v1:address(Txn),
@@ -739,23 +750,35 @@ fixup_txns(OldGroup, {NewGroup, _}, Pending) ->
                               case lists:member(OldVal, OldGroup) andalso
                                   not lists:member(OldVal, NewGroup) of
                                   true ->
-                                      {valid, Txn};
+                                      %% this becomes valid, so needs to be added to prepending
+                                      %% unstake, but the height is lost, so we drop it?
+                                      %% {valid, Txn};
+                                      {Acc, Uns, Pre};
                                   _ ->
-                                      Orig
-                              end;
+                                      {Acc#{K => Orig}, Uns, Pre}
+                             end;
                           valid ->
                               case lists:member(OldVal, NewGroup) of
                                   true ->
-                                      {in_group, Txn};
+                                      %% this becomes invalid, so needs to be removed from unstake
+                                      Uns1 = maps:map(fun(_Ht, Lst) ->
+                                                              lists:filter(fun(#validator{addr = Addr}) ->
+                                                                                   Addr /= OldVal
+                                                                           end,
+                                                                           Lst)
+                                                      end, Uns),
+                                      {Acc#{K => {in_group, Txn}}, Uns1, Pre};
                                   _ ->
-                                      Orig
+                                      {Acc#{K => Orig}, Uns, Pre}
                               end;
-                          _ -> Orig
+                          _ -> {Acc#{K => Orig}, Uns, Pre}
                       end;
                   _ ->
-                      Orig
+                      {Acc#{K => Orig}, Uns, Pre}
               end
-      end, Pending).
+      end,
+      {#{}, Unstake, Pretransfer},
+      Pending).
 
 %% block commands
 block_pre(S, _) ->
