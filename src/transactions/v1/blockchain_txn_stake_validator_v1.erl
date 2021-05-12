@@ -29,16 +29,21 @@
          to_json/2
         ]).
 
+-type txn_stake_validator() :: #blockchain_txn_stake_validator_v1_pb{}.
+-export_type([txn_stake_validator/0]).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -export([
          is_valid_owner/1,
          owner_signature/2
         ]).
--endif.
 
--type txn_stake_validator() :: #blockchain_txn_stake_validator_v1_pb{}.
--export_type([txn_stake_validator/0]).
+-spec owner_signature(any(), txn_stake_validator()) -> txn_stake_validator().
+owner_signature(Sig, Txn) ->
+    Txn#blockchain_txn_stake_validator_v1_pb{owner_signature = Sig}.
+
+-endif.
 
 -spec new(libp2p_crypto:pubkey_bin(), libp2p_crypto:pubkey_bin(),
           pos_integer(), non_neg_integer()) ->
@@ -91,10 +96,6 @@ calculate_fee(Txn, Ledger, DCPayloadSize, TxnFeeMultiplier, _) ->
 -spec owner_signature(txn_stake_validator()) -> binary().
 owner_signature(Txn) ->
     Txn#blockchain_txn_stake_validator_v1_pb.owner_signature.
-
--spec owner_signature(any(), txn_stake_validator()) -> txn_stake_validator().
-owner_signature(Sig, Txn) ->
-    Txn#blockchain_txn_stake_validator_v1_pb{owner_signature = Sig}.
 
 -spec sign(txn_stake_validator(), libp2p_crypto:sig_fun()) -> txn_stake_validator().
 sign(Txn, SigFun) ->
