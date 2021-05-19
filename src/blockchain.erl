@@ -1655,34 +1655,46 @@ add_bin_snapshot(BinSnap, Height, Hash, #blockchain{db=DB, snapshots=SnapshotsCF
 
 gc_snapshots(CutoffHeight, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
     {ok, Itr} = rocksdb:iterator(DB, SnapshotsCF, [{iterate_lower_bound, <<0:64/integer-unsigned-big>>}, {iterate_upper_bound, <<(CutoffHeight-1):64/integer-unsigned-big>>}]),
-    gc_snapshots(Itr, DB, SnapshotsCF, rocksdb:iterator_move(Itr, first)),
+    gc_snapshots(0, Itr, DB, SnapshotsCF, rocksdb:iterator_move(Itr, first)),
     rocksdb:compact_range(DB, SnapshotsCF, undefined, undefined, []).
 
-gc_snapshots(_Itr, _DB, _CF, {error, _}) ->
+gc_snapshots(_Count, _Itr, _DB, _CF, {error, _}) ->
     ok;
-gc_snapshots(Itr, DB, CF, {ok, <<IntHeight:64/integer-unsigned-big>>=Height, Hash}) ->
+gc_snapshots(Count, Itr, DB, CF, {ok, <<IntHeight:64/integer-unsigned-big>>=Height, Hash}) ->
     lager:info("GCing snapshot at height ~p", [IntHeight]),
     {ok, Batch} = rocksdb:batch(),
     rocksdb:batch_delete(Batch, CF, Height),
     rocksdb:batch_delete(Batch, CF, Hash),
     ok = rocksdb:write_batch(DB, Batch, [{sync, true}]),
-    gc_snapshots(Itr, DB, CF, rocksdb:iterator_move(Itr, next)).
+    case Count rem 10 == 0 of
+        true ->
+            rocksdb:compact_range(DB, CF, undefined, undefined, []);
+        false ->
+            ok
+    end,
+    gc_snapshots(Count + 1, Itr, DB, CF, rocksdb:iterator_move(Itr, next)).
 
 gc_blocks(CutoffHeight, #blockchain{db=DB, blocks=BlocksCF}) ->
     %% start at 2 here so we don't GC the genesis block
     {ok, Itr} = rocksdb:iterator(DB, BlocksCF, [{iterate_lower_bound, <<2:64/integer-unsigned-big>>}, {iterate_upper_bound, <<(CutoffHeight-1):64/integer-unsigned-big>>}]),
-    gc_blocks(Itr, DB, BlocksCF, rocksdb:iterator_move(Itr, first)),
+    gc_blocks(0, Itr, DB, BlocksCF, rocksdb:iterator_move(Itr, first)),
     rocksdb:compact_range(DB, BlocksCF, undefined, undefined, []).
 
-gc_blocks(_Itr, _DB, _CF, {error, _}) ->
+gc_blocks(_Count, _Itr, _DB, _CF, {error, _}) ->
     ok;
-gc_blocks(Itr, DB, CF, {ok, <<IntHeight:64/integer-unsigned-big>>=Height, Hash}) ->
+gc_blocks(Count, Itr, DB, CF, {ok, <<IntHeight:64/integer-unsigned-big>>=Height, Hash}) ->
     lager:info("GCing block at height ~p", [IntHeight]),
     {ok, Batch} = rocksdb:batch(),
     rocksdb:batch_delete(Batch, CF, Height),
     rocksdb:batch_delete(Batch, CF, Hash),
     ok = rocksdb:write_batch(DB, Batch, [{sync, true}]),
-    gc_blocks(Itr, DB, CF, rocksdb:iterator_move(Itr, next)).
+    case Count rem 100 == 0 of
+        true ->
+            rocksdb:compact_range(DB, CF, undefined, undefined, []);
+        false ->
+            ok
+    end,
+    gc_blocks(Count + 1, Itr, DB, CF, rocksdb:iterator_move(Itr, next)).
 
 
 -spec get_snapshot(blockchain_block:hash() | integer(), blockchain()) ->
