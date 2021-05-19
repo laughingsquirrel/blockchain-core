@@ -15,6 +15,8 @@
     ledger/0, ledger/1, ledger/2, ledger_at/2, ledger_at/3,
     dir/1,
 
+    open_only_blockchain/1,
+
     blocks/1, get_block/2, get_block_hash/2, get_raw_block/2, save_block/2,
     has_block/2,
     find_first_block_after/2,
@@ -80,7 +82,7 @@
     temp_blocks :: rocksdb:cf_handle(),
     plausible_blocks :: rocksdb:cf_handle(),
     snapshots :: rocksdb:cf_handle(),
-    ledger :: blockchain_ledger_v1:ledger()
+    ledger :: undefined | blockchain_ledger_v1:ledger()
 }).
 
 -define(GEN_HASH_FILE, "genesis").
@@ -1772,10 +1774,10 @@ clean(Dir) when is_list(Dir) ->
                    | {error, any()}}
                       | {error, any()}.
 load(Dir, Mode) ->
-    case open_db(Dir) of
+    case open_only_blockchain(Dir) of
         {error, _Reason}=Error ->
             Error;
-        {ok, DB, [DefaultCF, BlocksCF, HeightsCF, TempBlocksCF, PlausibleBlocksCF, SnapshotCF]} ->
+        {ok, Blockchain0} ->
             HonorQuickSync = application:get_env(blockchain, honor_quick_sync, false),
             Ledger =
                 case Mode of
@@ -1803,17 +1805,7 @@ load(Dir, Mode) ->
                         blockchain_ledger_v1:compact(L),
                         L
                 end,
-            Blockchain = #blockchain{
-                dir=Dir,
-                db=DB,
-                default=DefaultCF,
-                blocks=BlocksCF,
-                heights=HeightsCF,
-                temp_blocks=TempBlocksCF,
-                plausible_blocks=PlausibleBlocksCF,
-                snapshots=SnapshotCF,
-                ledger=Ledger
-            },
+            Blockchain = Blockchain0#blockchain{ledger=Ledger},
             compact(Blockchain),
             %% if this is not set, the below check will always be true
             SnapHeight = application:get_env(blockchain, blessed_snapshot_block_height, 1),
@@ -1834,6 +1826,26 @@ load(Dir, Mode) ->
             end,
             {Blockchain, ?MODULE:genesis_block(Blockchain)}
     end.
+
+
+open_only_blockchain(Dir) ->
+    case open_db(Dir) of
+        {error, _Reason}=Error ->
+            Error;
+        {ok, DB, [DefaultCF, BlocksCF, HeightsCF, TempBlocksCF, PlausibleBlocksCF, SnapshotCF]} ->
+            Blockchain = #blockchain{
+                dir=Dir,
+                db=DB,
+                default=DefaultCF,
+                blocks=BlocksCF,
+                heights=HeightsCF,
+                temp_blocks=TempBlocksCF,
+                plausible_blocks=PlausibleBlocksCF,
+                snapshots=SnapshotCF
+            },
+            {ok, Blockchain}
+    end.
+
 
 -spec load_genesis(file:filename_all()) -> {ok, blockchain_block:block()} | {error, any()}.
 load_genesis(Dir) ->
